@@ -37,4 +37,6 @@ deps/**/user.toml
 # Streaming EventTrace
 *.etli
 
-/source
+# Backend environment files (prevent accidental commit of secrets)
+.env*
+!.env.example
