@@ -1,0 +1,25 @@
+[package]
+version = "1.0.0"
+category = "Services"
+title = "Chat UI"
+description = "Chat interface for LLM integration with streaming support"
+authors = ["Demo Team"]
+repository = ""
+keywords = ["chat", "llm", "ui", "streaming"]
+changelog = "docs/CHANGELOG.md"
+readme = "docs/README.md"
+preview_image = "data/preview.png"
+icon = "data/icons/icon.png"
+
+[dependencies]
+"omni.kit.uiapp" = {}
+"omni.ui" = {}
+
+[[python.module]]
+name = "demo.chat_ui"
+
+[settings]
+exts."demo.chat_ui".backend_url = "http://localhost:8000"
+exts."demo.chat_ui".api_endpoint = "/api/v1/chat/stream"
+exts."demo.chat_ui".default_temperature = 0.7
+exts."demo.chat_ui".default_max_tokens = 2048

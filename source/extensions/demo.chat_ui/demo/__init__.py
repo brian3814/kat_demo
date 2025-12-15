@@ -1,0 +1,1 @@
+"""Demo namespace package."""
