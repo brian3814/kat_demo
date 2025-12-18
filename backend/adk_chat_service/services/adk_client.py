@@ -1,24 +1,26 @@
-"""Google ADK client wrapper for LLM integration."""
+"""Google ADK client with Runner and InMemorySessionService for context management.
+
+Uses ADK Agent + Runner pattern for chat with session-based context.
+"""
 
 import asyncio
-from typing import AsyncGenerator, Optional
-
-from google import genai
-from google.genai.types import GenerateContentConfig, GenerateContentResponse
+from typing import AsyncGenerator, Optional, Dict, Any, Callable
 
 from ..config import Settings
 from ..utils.exceptions import ADKClientError
 from ..utils.logger import get_logger
+from .session_manager import get_session_manager
+from .adk_agent import create_omniverse_agent, OmniverseAgent
 
 logger = get_logger()
 
 
 class ADKChatClient:
     """
-    Wrapper around Google ADK for chat interactions.
+    ADK Chat Client using Runner with InMemorySessionService.
 
-    Implements singleton pattern for lifecycle management and provides
-    async streaming interface for chat completions.
+    Provides async streaming interface for chat completions with
+    session-based context management and tool support.
     """
 
     def __init__(self, settings: Settings):
@@ -29,15 +31,13 @@ class ADKChatClient:
             settings: Application settings with API key and model config
         """
         self.settings = settings
-        self.client: Optional[genai.Client] = None
+        self._agent: Optional[OmniverseAgent] = None
         self._initialized = False
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
         """
-        Initialize the Google ADK client.
-
-        Creates the client with API key and verifies connectivity.
+        Initialize the ADK client with Runner and session service.
 
         Raises:
             ADKClientError: If initialization fails
@@ -48,10 +48,16 @@ class ADKChatClient:
                 return
 
             try:
-                logger.info("Initializing Google ADK client", model=self.settings.model_name)
+                logger.info(
+                    "Initializing ADK client with Runner mode",
+                    model=self.settings.model_name
+                )
 
-                # Initialize Google GenAI client
-                self.client = genai.Client(api_key=self.settings.google_api_key)
+                # Ensure session manager is initialized
+                get_session_manager()
+
+                # Create and initialize the OmniverseAgent with Runner
+                self._agent = await create_omniverse_agent(self.settings)
 
                 self._initialized = True
                 logger.info("ADK client initialized successfully")
@@ -59,9 +65,74 @@ class ADKChatClient:
             except Exception as e:
                 logger.error("Failed to initialize ADK client", error=str(e))
                 raise ADKClientError(
-                    message="Failed to initialize Google ADK client",
+                    message="Failed to initialize ADK client",
                     detail=str(e)
                 )
+
+    async def stream_chat_with_tools(
+        self,
+        message: str,
+        conversation_id: Optional[str] = None,
+        user_id: str = "default_user",
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        status_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Stream chat responses with tool calling support using Runner.
+
+        Args:
+            message: User message to send to the LLM
+            conversation_id: Optional session ID for continuing a conversation
+            user_id: User identifier for session management
+            temperature: Optional temperature override (not used in Runner mode)
+            max_tokens: Optional max tokens override (not used in Runner mode)
+            status_callback: Optional callback for status updates
+
+        Yields:
+            Dict with event type and data:
+                - {"type": "text_delta", "content": str, "done": bool}
+                - {"type": "tool_call", "tool": str, "params": dict}
+                - {"type": "tool_result", "tool": str, "result": dict}
+                - {"type": "error", "error": str}
+                - {"type": "end", "done": True, "session_id": str}
+
+        Raises:
+            ADKClientError: If chat fails
+        """
+        if not self._initialized or self._agent is None:
+            raise ADKClientError(
+                message="ADK client not initialized",
+                detail="Call initialize() before streaming"
+            )
+
+        try:
+            logger.info(
+                "Starting chat with Runner",
+                message_length=len(message),
+                user_id=user_id,
+                session_id=conversation_id
+            )
+
+            # Stream events from the agent
+            async for event in self._agent.run_conversation(
+                message=message,
+                user_id=user_id,
+                session_id=conversation_id,
+            ):
+                yield event
+
+        except Exception as e:
+            logger.error(
+                "Error during chat streaming",
+                error=str(e),
+                conversation_id=conversation_id
+            )
+            yield {
+                "type": "error",
+                "error": str(e),
+                "done": True
+            }
 
     async def stream_chat(
         self,
@@ -71,13 +142,13 @@ class ADKChatClient:
         conversation_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
-        Stream chat responses from Google ADK.
+        Stream chat responses (text-only interface).
 
         Args:
             message: User message to send to the LLM
             temperature: Optional temperature override
             max_tokens: Optional max tokens override
-            conversation_id: Optional conversation ID for context (future use)
+            conversation_id: Optional conversation ID for context
 
         Yields:
             str: Text chunks from the streaming response
@@ -85,95 +156,30 @@ class ADKChatClient:
         Raises:
             ADKClientError: If streaming fails
         """
-        if not self._initialized or self.client is None:
-            raise ADKClientError(
-                message="ADK client not initialized",
-                detail="Call initialize() before streaming"
-            )
-
-        try:
-            # Use request parameters or fall back to defaults
-            temp = temperature if temperature is not None else self.settings.temperature
-            max_tok = max_tokens if max_tokens is not None else self.settings.max_tokens
-
-            logger.info(
-                "Starting chat stream",
-                message_length=len(message),
-                temperature=temp,
-                max_tokens=max_tok,
-                conversation_id=conversation_id
-            )
-
-            # Configure generation parameters
-            config = GenerateContentConfig(
-                temperature=temp,
-                max_output_tokens=max_tok,
-            )
-
-            # Stream response from ADK
-            response_stream = await asyncio.to_thread(
-                self.client.models.generate_content_stream,
-                model=self.settings.model_name,
-                contents=message,
-                config=config
-            )
-
-            # Yield text chunks as they arrive
-            chunk_count = 0
-            for chunk in response_stream:
-                if chunk.text:
-                    chunk_count += 1
-                    yield chunk.text
-
-            logger.info(
-                "Chat stream completed",
-                chunk_count=chunk_count,
-                conversation_id=conversation_id
-            )
-
-        except Exception as e:
-            logger.error(
-                "Error during chat streaming",
-                error=str(e),
-                conversation_id=conversation_id
-            )
-            raise ADKClientError(
-                message="Failed to stream chat response",
-                detail=str(e)
-            )
+        async for event in self.stream_chat_with_tools(
+            message=message,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            conversation_id=conversation_id
+        ):
+            if event.get("type") == "text_delta":
+                yield event.get("content", "")
 
     async def shutdown(self) -> None:
-        """
-        Cleanup ADK client resources.
-
-        Call this during application shutdown.
-        """
+        """Cleanup ADK client resources."""
         async with self._lock:
             if self._initialized:
                 logger.info("Shutting down ADK client")
-                # No explicit cleanup needed for genai.Client
-                self.client = None
+                if self._agent:
+                    await self._agent.shutdown()
+                    self._agent = None
                 self._initialized = False
                 logger.info("ADK client shut down successfully")
 
     @property
     def is_ready(self) -> bool:
         """Check if ADK client is initialized and ready."""
-        return self._initialized and self.client is not None
-
-    def register_tool(self, tool) -> None:
-        """
-        Register a tool for function calling (Phase 2 - MCP integration).
-
-        Args:
-            tool: Tool instance to register
-
-        Note:
-            This is a placeholder for Phase 2 MCP tool integration.
-        """
-        logger.warning("Tool registration not yet implemented (Phase 2)")
-        # TODO: Implement tool registration for MCP
-        pass
+        return self._initialized and self._agent is not None and self._agent.is_ready
 
 
 # Global client instance

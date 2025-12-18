@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from . import __version__
 from .config import get_settings
 from .middleware.cors import setup_cors
-from .routes import chat
+from .routes import chat, websocket
 from .services.adk_client import ADKChatClient, set_adk_client
 from .utils.exceptions import BackendError
 from .utils.logger import get_logger, setup_logging
@@ -75,6 +75,7 @@ setup_cors(app, settings)
 
 # Register routes
 app.include_router(chat.router)
+app.include_router(websocket.router)
 
 
 @app.exception_handler(BackendError)

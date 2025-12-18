@@ -7,7 +7,7 @@ import carb.settings
 from typing import List, Dict, Any
 
 from .backend_client import BackendClient
-from .message_widget import MessageWidget, StatusIndicator
+from .message_widget import MessageWidget, StatusIndicator, ToolCallWidget
 
 
 class ChatWindow(ui.Window):
@@ -46,6 +46,7 @@ class ChatWindow(ui.Window):
         # Streaming state
         self._is_streaming = False
         self._current_assistant_message: MessageWidget = None
+        self._tool_widgets: Dict[str, ToolCallWidget] = {}  # call_id -> widget
 
         # Build UI
         self.frame.set_build_fn(self._build_ui)
@@ -138,31 +139,80 @@ class ChatWindow(ui.Window):
             self._current_assistant_message.build()
         self.messages.append(self._current_assistant_message)
 
-        # Stream response
+        # Stream response with tool support
         try:
             full_response = ""
+            self._tool_widgets.clear()
 
-            async for chunk in self.client.stream_chat(
+            async for event in self.client.stream_chat(
                 message=message,
                 temperature=self.default_temperature,
                 max_tokens=self.default_max_tokens,
                 conversation_history=self.conversation_history[:-1]  # Exclude current message
             ):
-                if chunk.get("error"):
-                    error_msg = chunk["error"]
+                event_type = event.get("type", "")
+
+                if event.get("error") and event_type != "tool_result":
+                    error_msg = event["error"]
                     carb.log_error(f"Chat error: {error_msg}")
                     self._current_assistant_message.set_content(f"Error: {error_msg}")
                     self._status_indicator.set_status("error", error_msg)
                     break
 
-                content = chunk.get("content", "")
-                if content:
-                    full_response += content
-                    self._current_assistant_message.append_content(content)
+                if event_type == "text_delta":
+                    # Text content from LLM
+                    content = event.get("content", "")
+                    if content:
+                        full_response += content
+                        self._current_assistant_message.append_content(content)
+                        self._scroll_to_bottom()
+                    self._status_indicator.set_status("thinking")
+
+                elif event_type == "tool_call":
+                    # Tool is being called
+                    tool_name = event.get("tool", "unknown")
+                    call_id = event.get("call_id", "")
+                    params = event.get("params", {})
+
+                    carb.log_info(f"Tool call: {tool_name} ({call_id})")
+                    self._status_indicator.set_status("tool", f"Using {tool_name}...")
+
+                    # Create tool call widget
+                    tool_widget = ToolCallWidget(tool_name, call_id, params)
+                    with self._message_container:
+                        tool_widget.build()
+                    self._tool_widgets[call_id] = tool_widget
                     self._scroll_to_bottom()
 
-                if chunk.get("done", False):
-                    # Add complete response to conversation history
+                elif event_type == "tool_result":
+                    # Tool execution completed
+                    call_id = event.get("call_id", "")
+                    result = event.get("result", {})
+                    success = result.get("success", False)
+
+                    carb.log_info(f"Tool result: {call_id} success={success}")
+
+                    # Update tool widget with result
+                    if call_id in self._tool_widgets:
+                        self._tool_widgets[call_id].set_result(result, success)
+                        self._scroll_to_bottom()
+
+                    self._status_indicator.set_status("thinking")
+
+                elif event_type == "end":
+                    # Streaming complete
+                    self.conversation_history.append({"role": "assistant", "content": full_response})
+                    self._status_indicator.set_status("ready")
+                    break
+
+                elif event_type == "error":
+                    error_msg = event.get("error", "Unknown error")
+                    carb.log_error(f"Stream error: {error_msg}")
+                    self._status_indicator.set_status("error", error_msg)
+                    break
+
+                # Legacy support for old format
+                elif event.get("done", False):
                     self.conversation_history.append({"role": "assistant", "content": full_response})
                     self._status_indicator.set_status("ready")
                     break
@@ -177,6 +227,7 @@ class ChatWindow(ui.Window):
             self._is_streaming = False
             self._send_button.enabled = True
             self._current_assistant_message = None
+            self._tool_widgets.clear()
 
     def _scroll_to_bottom(self):
         """Scroll message container to bottom."""

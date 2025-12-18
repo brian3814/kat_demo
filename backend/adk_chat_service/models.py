@@ -97,9 +97,10 @@ class ErrorResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Response model for health check endpoint."""
 
-    status: str = Field(..., description="Service status (healthy/unhealthy)")
+    status: str = Field(..., description="Service status (healthy/degraded/unhealthy)")
     version: str = Field(..., description="Service version")
     adk_ready: bool = Field(..., description="Whether ADK client is initialized")
+    kit_connected: bool = Field(default=False, description="Whether Kit extension is connected")
     timestamp: datetime = Field(
         default_factory=datetime.utcnow,
         description="Timestamp of health check"
@@ -112,6 +113,7 @@ class HealthResponse(BaseModel):
                     "status": "healthy",
                     "version": "1.0.0",
                     "adk_ready": True,
+                    "kit_connected": True,
                     "timestamp": "2025-12-15T10:30:00Z"
                 }
             ]

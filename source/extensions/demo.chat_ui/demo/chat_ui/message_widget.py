@@ -103,6 +103,134 @@ class MessageWidget:
         return self._content
 
 
+class ToolCallWidget:
+    """Widget for displaying a tool call with status and result."""
+
+    def __init__(self, tool_name: str, call_id: str, params: dict = None):
+        """Initialize tool call widget.
+
+        Args:
+            tool_name: Name of the tool being called
+            call_id: Unique identifier for this call
+            params: Tool parameters
+        """
+        self.tool_name = tool_name
+        self.call_id = call_id
+        self.params = params or {}
+        self._status = "running"
+        self._result = None
+        self._status_label: ui.Label = None
+        self._result_label: ui.Label = None
+
+    def build(self) -> ui.Frame:
+        """Build the tool call widget UI.
+
+        Returns:
+            Frame containing the tool call display
+        """
+        frame = ui.Frame(height=0)
+        with frame:
+            with ui.HStack(spacing=5, height=0):
+                ui.Spacer(width=ui.Percent(5))
+
+                with ui.ZStack(height=0):
+                    # Background with special tool color
+                    ui.Rectangle(
+                        style={
+                            "background_color": ui.color(0.4, 0.3, 0.5, 0.4),  # Purple tint
+                            "border_radius": 6,
+                            "border_width": 1,
+                            "border_color": ui.color(0.5, 0.4, 0.6, 0.6)
+                        }
+                    )
+
+                    with ui.VStack(spacing=2, height=0):
+                        ui.Spacer(height=4)
+
+                        # Tool name and status
+                        with ui.HStack(height=0):
+                            ui.Spacer(width=8)
+                            ui.Label(
+                                f"🔧 {self.tool_name}",
+                                style={
+                                    "font_size": 14,
+                                    "color": ui.color(0.7, 0.8, 1.0, 1.0)
+                                }
+                            )
+                            ui.Spacer(width=10)
+                            self._status_label = ui.Label(
+                                "⏳ Running...",
+                                style={
+                                    "font_size": 12,
+                                    "color": ui.color(0.8, 0.7, 0.3, 1.0)
+                                }
+                            )
+                            ui.Spacer(width=8)
+
+                        # Result (hidden initially)
+                        with ui.HStack(height=0):
+                            ui.Spacer(width=8)
+                            self._result_label = ui.Label(
+                                "",
+                                word_wrap=True,
+                                style={
+                                    "font_size": 12,
+                                    "color": ui.color(0.7, 0.7, 0.7, 1.0)
+                                }
+                            )
+                            ui.Spacer(width=8)
+
+                        ui.Spacer(height=4)
+
+                ui.Spacer(width=ui.Percent(5))
+
+        return frame
+
+    def set_result(self, result: dict, success: bool = True):
+        """Set the tool call result.
+
+        Args:
+            result: Result dictionary from tool execution
+            success: Whether the tool call succeeded
+        """
+        self._result = result
+        self._status = "completed" if success else "failed"
+
+        if self._status_label:
+            if success:
+                self._status_label.text = "✓ Done"
+                self._status_label.set_style({
+                    "font_size": 12,
+                    "color": ui.color(0.3, 0.8, 0.3, 1.0)
+                })
+            else:
+                self._status_label.text = "✗ Failed"
+                self._status_label.set_style({
+                    "font_size": 12,
+                    "color": ui.color(0.8, 0.3, 0.3, 1.0)
+                })
+
+        if self._result_label and result:
+            # Show summary of result
+            if success and result.get("success"):
+                if "prim_path" in result:
+                    self._result_label.text = f"→ {result['prim_path']}"
+                elif "selected_prims" in result:
+                    count = len(result["selected_prims"])
+                    self._result_label.text = f"→ {count} prim(s) selected"
+                elif "prims" in result:
+                    count = result.get("count", len(result["prims"]))
+                    self._result_label.text = f"→ {count} prim(s) found"
+                elif "position" in result:
+                    pos = result["position"]
+                    self._result_label.text = f"→ Position: ({pos.get('x', 0):.1f}, {pos.get('y', 0):.1f}, {pos.get('z', 0):.1f})"
+                else:
+                    self._result_label.text = "→ Success"
+            else:
+                error = result.get("error", "Unknown error")
+                self._result_label.text = f"→ Error: {error}"
+
+
 class StatusIndicator:
     """Widget for displaying connection and processing status."""
 
@@ -134,11 +262,11 @@ class StatusIndicator:
 
         return frame
 
-    def set_status(self, status: Literal["ready", "thinking", "error"], message: str = None):
+    def set_status(self, status: Literal["ready", "thinking", "tool", "error"], message: str = None):
         """Update status indicator.
 
         Args:
-            status: Status type
+            status: Status type (ready, thinking, tool, error)
             message: Optional custom status message
         """
         if status == "ready":
@@ -147,6 +275,9 @@ class StatusIndicator:
         elif status == "thinking":
             new_color = ui.color(0.8, 0.6, 0.2, 1.0)  # Orange
             default_msg = "Thinking..."
+        elif status == "tool":
+            new_color = ui.color(0.5, 0.4, 0.8, 1.0)  # Purple
+            default_msg = "Using tool..."
         else:  # error
             new_color = ui.color(0.8, 0.2, 0.2, 1.0)  # Red
             default_msg = "Error"

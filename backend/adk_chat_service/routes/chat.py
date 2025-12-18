@@ -6,7 +6,8 @@ from fastapi.responses import StreamingResponse
 from .. import __version__
 from ..models import ChatRequest, HealthResponse
 from ..services.adk_client import ADKChatClient, get_adk_client
-from ..services.stream_handler import format_stream_as_ndjson
+from ..services.kit_connection import get_kit_manager
+from ..services.stream_handler import format_stream_as_ndjson, format_tool_stream_as_ndjson
 from ..utils.exceptions import ADKClientError, StreamingError
 from ..utils.logger import get_logger
 
@@ -45,17 +46,17 @@ async def stream_chat(
             max_tokens=request.max_tokens
         )
 
-        # Get text stream from ADK client
-        text_stream = adk_client.stream_chat(
+        # Get tool-enabled stream from ADK client
+        event_stream = adk_client.stream_chat_with_tools(
             message=request.message,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             conversation_id=request.conversation_id
         )
 
-        # Format as NDJSON stream
-        ndjson_stream = format_stream_as_ndjson(
-            text_stream,
+        # Format as NDJSON stream with tool events
+        ndjson_stream = format_tool_stream_as_ndjson(
+            event_stream,
             conversation_id=request.conversation_id
         )
 
@@ -123,11 +124,22 @@ async def health_check(
     """
     try:
         adk_ready = adk_client.is_ready
+        kit_manager = get_kit_manager()
+        kit_connected = kit_manager.is_connected
+
+        # Determine overall status
+        if adk_ready and kit_connected:
+            status = "healthy"
+        elif adk_ready:
+            status = "degraded"  # ADK works but no Kit tools
+        else:
+            status = "unhealthy"
 
         return HealthResponse(
-            status="healthy" if adk_ready else "degraded",
+            status=status,
             version=__version__,
-            adk_ready=adk_ready
+            adk_ready=adk_ready,
+            kit_connected=kit_connected
         )
 
     except Exception as e:
@@ -135,5 +147,6 @@ async def health_check(
         return HealthResponse(
             status="unhealthy",
             version=__version__,
-            adk_ready=False
+            adk_ready=False,
+            kit_connected=False
         )

@@ -4,8 +4,10 @@ import asyncio
 import omni.ext
 import omni.ui as ui
 import carb
+import carb.settings
 
 from .chat_window import ChatWindow
+from .kit_tool_client import KitToolClient
 
 
 class ChatUIExtension(omni.ext.IExt):
@@ -15,6 +17,7 @@ class ChatUIExtension(omni.ext.IExt):
         """Initialize extension."""
         super().__init__()
         self._window: ChatWindow = None
+        self._tool_client: KitToolClient = None
 
     def on_startup(self, ext_id: str):
         """Called when extension starts.
@@ -23,6 +26,18 @@ class ChatUIExtension(omni.ext.IExt):
             ext_id: Extension ID
         """
         carb.log_info("[demo.chat_ui] Extension startup")
+
+        # Get settings
+        settings = carb.settings.get_settings()
+        backend_url = settings.get("/exts/demo.chat_ui/backend_url") or "http://localhost:8000"
+
+        # Convert HTTP URL to WebSocket URL for tool client
+        ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_tools_url = f"{ws_url}/ws/tools"
+
+        # Start Kit Tool Client (connects to backend as WebSocket client)
+        self._tool_client = KitToolClient(backend_url=ws_tools_url)
+        asyncio.ensure_future(self._tool_client.start())
 
         # Create chat window
         self._window = ChatWindow(title="LLM Chat", width=500, height=600)
@@ -44,6 +59,11 @@ class ChatUIExtension(omni.ext.IExt):
     def on_shutdown(self):
         """Called when extension shuts down."""
         carb.log_info("[demo.chat_ui] Extension shutdown")
+
+        # Stop tool client
+        if self._tool_client:
+            asyncio.ensure_future(self._tool_client.stop())
+            self._tool_client = None
 
         # Clean up window
         if self._window:
